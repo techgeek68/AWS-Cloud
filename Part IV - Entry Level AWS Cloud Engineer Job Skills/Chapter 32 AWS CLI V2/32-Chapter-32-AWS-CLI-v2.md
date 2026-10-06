@@ -191,6 +191,31 @@ sudo rm /usr/local/bin/aws /usr/local/bin/aws_completer 2>/dev/null || true
 
 ![aws ec2 describe-regions table output](https://github.com/user-attachments/assets/a4e2d833-2727-4322-b57a-69fb2b15346e)
 
+Current CLI releases print a nested **Geography** block under each Region, so the table is longer than in older captures:
+
+```text
+||                                   Regions                                   ||
+|+-----------------------------------+-------------------------+---------------+|
+||             Endpoint              |       OptInStatus       |  RegionName   ||
+|+-----------------------------------+-------------------------+---------------+|
+||  ec2.ap-south-1.amazonaws.com     |  opt-in-not-required    |  ap-south-1   ||
+|+-----------------------------------+-------------------------+---------------+|
+|||                                 Geography                                 |||
+||+---------------------------------------------------------------------------+||
+|||                                   Name                                    |||
+||+---------------------------------------------------------------------------+||
+|||  India                                                                    |||
+||+---------------------------------------------------------------------------+||
+```
+
+For a compact list, select the columns yourself:
+
+```bash
+aws ec2 describe-regions \
+  --query 'Regions[].{Region:RegionName,Endpoint:Endpoint,OptIn:OptInStatus}' \
+  --output table
+```
+
 ---
 
 ## 32.2 Configuration
@@ -214,18 +239,98 @@ The CLI stores settings in two files:
    ```
 2. Enter the **AWS Access Key ID**.
 3. Enter the **AWS Secret Access Key**.
-4. Enter the **Default region name**, for example `us-east-1`.
-5. Enter the **Default output format**: `json`, `yaml`, `text`, or `table`.
+4. Enter the **AWS Session Token**.
+   - Key ID beginning `ASIA`: these are temporary STS credentials, so paste the token.
+   - Key ID beginning `AKIA`: these are long-lived and need no token, so press Enter.
+5. Enter the **Default region name**, for example `us-east-1`.
+6. Enter the **Default output format**: `json`, `yaml`, `text`, or `table`.
+7. Answer the **AI coding agent** prompt. It is optional and does not affect your credentials.
+   ```text
+   Configure AWS skills and the AWS MCP server for your AI coding agent(s)? [y/n/never]:
+   ```
+   - `y`: detect the AI coding agents on this machine and continue to the prompts below.
+   - `n`: skip for now. `aws configure` finishes here and asks again next time.
+   - `never`: skip, and stop asking on later runs.
+8. If you answered `y`, confirm the default skills. Press Enter to accept, since the capital letter marks the default.
+   ```text
+   Install 24 default AWS skills? [Y/n]:
+   ```
+9. Answer the **MCP server** prompt.
+   ```text
+   Configure AWS MCP server connection? [Y/n]:
+   ```
+   - `Y` or Enter: add the AWS MCP server to each detected agent's configuration file, for Claude Code `~/.claude.json`. The agent can then call AWS APIs with the credentials the CLI resolves.
+   - `n`: keep the skills that were just installed, without connecting the agent to AWS.
+
+The two questions are separate decisions. Skills are local reference files that teach the agent how to work with AWS. The MCP server connection is what gives the agent live access to the account, so it is the one to think about on a shared or production machine. Section 32.2.5 covers both in detail.
+
+A complete session with temporary credentials looks like this:
+
+```text
+$ aws configure
+AWS Access Key ID [****************GO45]: ASIA<ACCESS_KEY_ID>
+AWS Secret Access Key [****************xBvf]: <SECRET_ACCESS_KEY>
+AWS Session Token [****************iyBW]: <SESSION_TOKEN>
+Default region name [us-east-1]: us-east-1
+Default output format [json]: json
+
+Configure AWS skills and the AWS MCP server for your AI coding agent(s)? [y/n/never]: y
+
+Detecting installed AI coding agents...
+  ✓ Claude Code — ~/.claude/skills
+  ...
+
+Install 24 default AWS skills? [Y/n]: y
+  ...
+
+Configure AWS MCP server connection? [Y/n]: y
+
+AWS MCP server configured for:
+  ✓ Claude Code — ~/.claude.json: updated
+```
+
+A value in square brackets is what is already stored, masked to its last four characters. Pressing Enter keeps it.
 
 ![aws configure interactive prompts](https://github.com/user-attachments/assets/a4c24ca2-b975-4e83-b618-fd6b65150f65)
 
 ![Completed aws configure session](https://github.com/user-attachments/assets/ebab6f6e-a22d-47b4-b035-6a6f40eee9a7)
 
-**If your access key ID begins with `ASIA`,** you have temporary STS credentials and a session token is also required. `aws configure` does not prompt for one, so it must be added manually. Keys beginning `AKIA` are long-lived and need no token.
+10. Verify.
+    ```bash
+    aws sts get-caller-identity
+    ```
+    With temporary credentials from an assumed role, the ARN shows the role and the session name:
+    ```json
+    {
+        "UserId": "AROA<ROLE_ID>:<SESSION_NAME>",
+        "Account": "<AWS_ACCOUNT_ID>",
+        "Arn": "arn:aws:sts::<AWS_ACCOUNT_ID>:assumed-role/<ROLE_NAME>/<SESSION_NAME>"
+    }
+    ```
+
+**Paste the token value only.** Lab consoles and credential portals usually show temporary credentials in file format, one `name=value` line each:
 
 ![Temporary credentials including a session token](https://github.com/user-attachments/assets/6693392a-e46c-4634-89e5-599a93c2c5b7)
 
-6. Open the credentials file.
+Copying the whole third line into the prompt stores the name as part of the token:
+
+```text
+AWS Session Token [None]: aws_session_token=IQoJb3JpZ2luX2Vj...
+```
+
+`aws configure` accepts it without complaint, and every later call fails. The message differs by service, though the cause is the same:
+
+```text
+$ aws sts get-caller-identity
+aws: [ERROR]: An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid
+
+$ aws ec2 describe-regions --output table
+aws: [ERROR]: An error occurred (AuthFailure) when calling the DescribeRegions operation: AWS was not able to validate the provided access credentials
+```
+
+To fix it:
+
+1. Open the credentials file.
    - Linux or macOS:
      ```bash
      vi ~/.aws/credentials
@@ -234,14 +339,23 @@ The CLI stores settings in two files:
      ```powershell
      notepad $env:UserProfile\.aws\credentials
      ```
-7. Add the session token under the relevant profile.
+2. Find the doubled name.
    ```ini
-   aws_session_token = <SESSION_TOKEN>
+   aws_session_token = aws_session_token=IQoJb3JpZ2luX2Vj...
    ```
-8. Verify.
-   ```bash
-   aws sts get-caller-identity
+3. Remove the second `aws_session_token=` so that only the token follows the equals sign.
+   ```ini
+   aws_session_token = IQoJb3JpZ2luX2Vj...
    ```
+4. Save, then run `aws sts get-caller-identity` again.
+
+The same file edit is the fallback on older CLI releases, where `aws configure` does not ask for a session token at all. Alternatively, set the value without opening an editor:
+
+```bash
+aws configure set aws_session_token "<SESSION_TOKEN>"
+```
+
+**Switching back to long-lived keys.** Pressing Enter at the token prompt keeps the stored token. An old token left beside a new `AKIA` key produces the same invalid token error, so delete the `aws_session_token` line from the profile when you move from temporary to long-lived credentials.
 
 ### 32.2.2 File Format
 
@@ -255,7 +369,14 @@ aws_secret_access_key = defaultSecret...
 [prod]
 aws_access_key_id = AKIA_PROD...
 aws_secret_access_key = prodSecret...
+
+[lab]
+aws_access_key_id = ASIA_LAB...
+aws_secret_access_key = labSecret...
+aws_session_token = IQoJb3JpZ2luX2Vj...
 ```
+
+A profile holding an `ASIA` key needs all three lines. Each line is `name = value`, with the name appearing once.
 
 `~/.aws/config`:
 
@@ -313,6 +434,80 @@ Where the organization uses IAM Identity Center, which section 17.5.1 covers, co
    ```
 
 This is the preferred production setup, because no long-lived secret is written to disk.
+
+### 32.2.5 AI Coding Agent Setup
+
+Current CLI releases include the Agent Toolkit for AWS. It installs AWS skills into the AI coding agents found on the machine and connects them to the AWS MCP server, so an agent can look up AWS guidance and call AWS APIs under your identity. It is optional, and nothing else in this part depends on it.
+
+`aws configure` offers it after the output format prompt. To run it on its own, which needs CLI 2.35 or later:
+
+```bash
+aws configure agent-toolkit
+```
+
+Add `--yes` to accept every default without prompting.
+
+1. Answer `y` to the opening question.
+   ```text
+   Configure AWS skills and the AWS MCP server for your AI coding agent(s)? [y/n/never]: y
+   ```
+2. Read the detection result. The CLI looks for each agent's skills directory.
+   ```text
+   Detecting installed AI coding agents...
+     ✓ Claude Code — ~/.claude/skills
+     ✗ Cline — ~/.cline/skills (not found)
+     ✗ Codex — ~/.agents/skills (not found)
+     ✗ Cursor — ~/.cursor/skills (not found)
+     ...
+   ```
+3. Confirm the default skills. The count changes between releases; this run offered 24.
+   ```text
+   Install 24 default AWS skills? [Y/n]: y
+   ```
+4. Confirm the MCP server connection.
+   ```text
+   Configure AWS MCP server connection? [Y/n]: y
+
+   AWS MCP server configured for:
+     ✓ Claude Code — ~/.claude.json: updated
+   ```
+
+**Agents and the directories checked**
+
+| Agent | Skills directory |
+| --- | --- |
+| Claude Code | `~/.claude/skills` |
+| Cline | `~/.cline/skills` |
+| Cursor | `~/.cursor/skills` |
+| Kiro | `~/.kiro/skills` |
+| OpenClaw | `~/.openclaw/skills` |
+| Pi | `~/.pi/agent/skills` |
+| Codex, Gemini CLI, OpenCode, Windsurf | `~/.agents/skills` |
+
+**Default skills installed in this run**
+
+`amazon-bedrock`, `aws-ai-ml`, `aws-auth`, `aws-billing-and-cost-management`, `aws-blocks`, `aws-cdk`, `aws-cloudformation`, `aws-compute`, `aws-containers`, `aws-database`, `aws-deployment`, `aws-iam`, `aws-messaging-and-streaming`, `aws-networking`, `aws-observability`, `aws-sdk-js-v3-usage`, `aws-sdk-python-usage`, `aws-sdk-swift-usage`, `aws-security`, `aws-serverless`, `aws-storage`, `launch-with-aws`, `setting-up-cloudwatch-observability`, `signing-in-to-aws`.
+
+**What changes on disk**
+
+- One folder per skill is added under each detected agent's skills directory.
+- The agent's MCP configuration file is updated, for Claude Code `~/.claude.json`.
+- `~/.aws/credentials` and `~/.aws/config` are not touched by this step.
+
+**Finding more skills**
+
+```bash
+aws agent-toolkit search-skills --search-query "lambda"
+```
+
+The hint the CLI prints ends in `--search-query <text>`. That is a placeholder, and pasting it as written fails in the shell before the CLI even runs, because `<` is input redirection:
+
+```text
+$ aws agent-toolkit search-skills --search-query <text>
+zsh: parse error near `\n'
+```
+
+**Before agreeing on a shared or production workstation.** The MCP server acts with whatever credentials the CLI resolves, so an agent gains the same reach as the active profile. Point it at a least-privilege or read-only profile, and answer `n` where policy does not allow agent access.
 
 ---
 
@@ -539,7 +734,9 @@ Add that line to `~/.bashrc` or `~/.zshrc` to make it persistent.
 | Symptom | Cause and fix |
 | --- | --- |
 | `Unable to locate credentials` | No profile, environment variable, or instance role resolved. Run `aws configure` or check `AWS_PROFILE` |
-| `The security token included in the request is invalid` | Temporary credentials expired, or the session token is missing for an `ASIA` key. Reissue them |
+| `InvalidClientTokenId`: `The security token included in the request is invalid` | Temporary credentials expired, the session token is missing for an `ASIA` key, the token was pasted with its `aws_session_token=` prefix, or a stale token sits beside a new `AKIA` key. Check the `aws_session_token` line in `~/.aws/credentials`, then reissue if expired |
+| `AuthFailure`: `AWS was not able to validate the provided access credentials` | The EC2 form of the same problem. Fix as in the row above |
+| `zsh: parse error near` or `syntax error near unexpected token` after pasting a command | A placeholder such as `<text>` was pasted literally. Replace it with a real value, in quotes |
 | `The config profile (x) could not be found` | The profile is missing the `profile` prefix in `~/.aws/config` |
 | `AccessDenied` naming an action | The identity lacks that permission. Read the ARN in the message; it names the exact action and resource |
 | `AccessDenied` with MFA required | The policy has an MFA condition. Use `get-session-token` or an assume-role profile with `mfa_serial` |
@@ -573,7 +770,7 @@ Add that line to `~/.bashrc` or `~/.zshrc` to make it persistent.
 - C. An MFA device
 - D. The `profile` prefix in the config file
 
-**Answer: B.** *Target exam: AWS Certified Cloud Practitioner.* Keys beginning `ASIA` are temporary and require `aws_session_token` alongside the key and secret; `aws configure` does not prompt for it.
+**Answer: B.** *Target exam: AWS Certified Cloud Practitioner.* Keys beginning `ASIA` are temporary and require `aws_session_token` alongside the key and secret. Current `aws configure` releases prompt for it; older ones do not, and the line must then be added to `~/.aws/credentials` by hand.
 
 **Q2.** A named profile works when referenced from `~/.aws/credentials` but the CLI reports it cannot be found when settings are added to `~/.aws/config`. What is wrong?
 
